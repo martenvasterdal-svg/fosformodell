@@ -2,7 +2,7 @@
 import numpy as np
 import pandas as pd
 import streamlit as st
-import plotly.express as px
+import altair as alt
 
 # ----------------------- Sidinställningar -----------------------
 st.set_page_config(page_title="Fosforbelastning – andelar & area", layout="wide")
@@ -237,31 +237,21 @@ if st.button("🧪 Beräkna fosforbelastning", type="primary"):
     c2.metric("Total fosfor (kg/år)", f"{total_p_kgyr:,.2f}")
     c3.metric("Medel specifik belastning (kg/ha/år)", f"{mean_p_kghayr:,.2f}")
 
-    # Diagram – kg/år per polygon
-    fig_tot = px.bar(
-        out,
-        x="polygon_id",
-        y="Tot P (kg/år)",
-        title="Fosforbelastning (kg/år) per polygon",
-        labels={"polygon_id": "Polygon-ID", "Tot P (kg/år)": "kg/år"},
-        text="Tot P (kg/år)"
-    )
-    fig_tot.update_traces(texttemplate="%{text:.2f}", textposition="outside")
-    fig_tot.update_layout(xaxis_tickangle=-30)
-    st.plotly_chart(fig_tot, use_container_width=True)
+    # Diagram – kg/år per polygon (Altair)
+    chart_tot = alt.Chart(out).mark_bar().encode(
+        x=alt.X("polygon_id:N", title="Polygon-ID", sort=None),
+        y=alt.Y("Tot P (kg/år):Q", title="kg/år"),
+        tooltip=["polygon_id", "Tot P (kg/år)", "Tot P bel. (kg/ha och år)", "area_ha"]
+    ).properties(title="Fosforbelastning (kg/år) per polygon")
+    st.altair_chart(chart_tot, use_container_width=True)
 
-    # Diagram – kg/ha/år per polygon
-    fig_spec = px.bar(
-        out,
-        x="polygon_id",
-        y="Tot P bel. (kg/ha och år)",
-        title="Specifik fosforbelastning (kg/ha/år) per polygon",
-        labels={"polygon_id": "Polygon-ID", "Tot P bel. (kg/ha och år)": "kg/ha/år"},
-        text="Tot P bel. (kg/ha och år)"
-    )
-    fig_spec.update_traces(texttemplate="%{text:.2f}", textposition="outside")
-    fig_spec.update_layout(xaxis_tickangle=-30)
-    st.plotly_chart(fig_spec, use_container_width=True)
+    # Diagram – kg/ha/år per polygon (Altair)
+    chart_spec = alt.Chart(out).mark_bar(color="#3b82f6").encode(
+        x=alt.X("polygon_id:N", title="Polygon-ID", sort=None),
+        y=alt.Y("Tot P bel. (kg/ha och år):Q", title="kg/ha/år"),
+        tooltip=["polygon_id", "Tot P bel. (kg/ha och år)", "area_ha"]
+    ).properties(title="Specifik fosforbelastning (kg/ha/år) per polygon")
+    st.altair_chart(chart_spec, use_container_width=True)
 
     # Export
     st.download_button(
