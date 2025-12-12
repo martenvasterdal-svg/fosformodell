@@ -49,6 +49,7 @@ def clamp01(x):
         return 0.0
     return min(max(x, 0.0), 1.0)
 
+
 def validate_and_prepare(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     """
     Klipper andelar till [0,1], säkrar area_ha >= 0,
@@ -67,4 +68,33 @@ def validate_and_prepare(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     if "area_ha" not in df2.columns:
         df2["area_ha"] = 0.0
     df2["area_ha"] = pd.to_numeric(df2["area_ha"], errors="coerce").fillna(0.0)
+
+    # Varning: negativa area → sätt till 0
     if (df2["area_ha"] < 0).any():
+        df2.loc[df2["area_ha"] < 0, "area_ha"] = 0.0
+
+    warnings = []
+
+    # Summeringar (varning om ej exakt 1.0)
+    land_sum = df2[LAND_COLS].sum(axis=1)
+    soil_sum = df2[SOIL_COLS].sum(axis=1)
+
+    bad_land = ~np.isclose(land_sum, 1.0)
+    bad_soil = ~np.isclose(soil_sum, 1.0)
+
+    if bad_land.any():
+        ids = df2.loc[bad_land, "polygon_id"].astype(str).tolist()
+        warnings.append(f"Markandelar summerar inte till 1 för: {', '.join(ids)}.")
+
+    if bad_soil.any():
+        ids = df2.loc[bad_soil, "polygon_id"].astype(str).tolist()
+        warnings.append(f"Jordartsandelar summerar inte till 1 för: {', '.join(ids)}.")
+
+    # Area 0 (ger Tot P (kg/år) = 0 – OK men informativt)
+    zero_area = df2["area_ha"] <= 0
+    if zero_area.any():
+        ids = df2.loc[zero_area, "polygon_id"].astype(str).tolist()
+        warnings.append(f"Area (ha) är 0 för: {', '.join(ids)} (total belastning blir 0).")
+
+    return df2, warnings
+
