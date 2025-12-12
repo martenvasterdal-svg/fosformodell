@@ -12,8 +12,8 @@ from rasterstats import zonal_stats
 
 st.set_page_config(page_title="Fosfor-Features: lera & markslag", layout="wide")
 
-MARKTACKE_PATH = https://github.com/martenvasterdal-svg/fosformodell/releases/download/data-v1/marktacke.tif
-LERA_PATH = https://github.com/martenvasterdal-svg/fosformodell/releases/download/data-v1/finkorniga.jordarter.tif
+MARKTACKE_PATH = "https://github.com/martenvasterdal-svg/fosformodell/releases/download/data-v1/marktacke.tif"
+LERA_PATH = "https://github.com/martenvasterdal-svg/fosformodell/releases/download/data-v1/finkorniga.jordarter.tif"
 
 # Klassning enligt din definition
 LANDCOVER_MAP = {
