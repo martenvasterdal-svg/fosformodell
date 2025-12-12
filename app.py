@@ -1,100 +1,137 @@
 
+# app.py
 import numpy as np
-import pandas as pd
 import streamlit as st
-import altair as alt
 
-# Importera DataFrame-varianten från din modell (alternativ B)
-from model import run_model_df
+# Importera din modellfunktion
+from model import run_model
 
-# ----------------------- Sidinställningar -----------------------
-st.set_page_config(page_title="Fosforbelastning – andelar & area", layout="wide")
-st.title("🧮 Fosforbelastning per polygon – andelar & area (ha)")
-st.caption(
-    "Ange area (ha) och andelar för markanvändning och jordarter per polygon. "
-    "Koefficienterna är låsta i din tränade modell (model.py). "
-    "Beräkna fosforbelastning i kg/ha/år och kg/år."
+st.set_page_config(
+    page_title="Fosformodell – P-belastning",
+    page_icon="🧪",
+    layout="centered",
 )
 
-# ----------------------- Konfiguration -------------------------
-LAND_COLS = ["andel_akermark", "andel_exploaterad", "andel_skogsmark", "andel_ovrig"]
-SOIL_COLS = ["andel_leriga", "andel_medelfina", "andel_grova"]
+st.title("🧪 Fosformodell (log-transformerad RandomForest)")
+st.caption("Beräknar P-belastning baserat på area, mark- och jordartsandelar.")
 
-# ----------------------- Hjälpfunktioner ------------------------
-def make_empty_table(n: int) -> pd.DataFrame:
-    """Skapar en startmall med polygon_id, area_ha och standardandelar."""
-    data = {
-        "polygon_id": [f"P{i+1}" for i in range(n)],
-        "area_ha": [10.0] * n,  # default 10 ha – kan ändras i tabellen
-        # Markandelar (summa 1)
-        "andel_akermark":   [0.25] * n,
-        "andel_exploaterad":[0.10] * n,
-        "andel_skogsmark":  [0.50] * n,
-        "andel_ovrig":      [0.15] * n,
-        # Jordartsandelar (summa 1)
-        "andel_leriga":     [0.40] * n,
-        "andel_medelfina":  [0.40] * n,
-        "andel_grova":      [0.20] * n,
-    }
-    cols = ["polygon_id", "area_ha"] + LAND_COLS + SOIL_COLS
-    return pd.DataFrame(data, columns=cols)
+with st.expander("ℹ️ Om modellen", expanded=False):
+    st.markdown(
+        """
+        Den här appen använder funktionen `run_model(...)` från `model.py` och kräver
+        att filen **`logrf_mild_model.pkl`** ligger i samma katalog.
 
-def clamp01(x):
-    """Klipp värden till [0,1] och hantera icke-numeriska som 0.0."""
+        **Utdata**:
+        - `p_kg_per_ha` – beräknad fosforbelastning per hektar (kg/ha·år)
+        - `total_kg_per_ar` – total belastning per år (kg/år)
+        """
+    )
+
+# --------------- Inmatning ---------------
+
+st.header("1) Inmatning")
+
+col_area, col_norm = st.columns([2, 1])
+with col_area:
+    area_ha = st.number_input(
+        "Area (ha)",
+        min_value=0.0,
+        value=100.0,
+        step=1.0,
+        format="%.2f",
+        help="Total area i hektar (> 0).",
+    )
+with col_norm:
+    auto_normalize = st.toggle(
+        "Auto-normalisera andelar",
+        value=True,
+        help="Om på, normaliseras andelarna automatiskt till att summera till 1.",
+    )
+
+st.subheader("Markanvändning – andelar")
+col1, col2 = st.columns(2)
+with col1:
+    andel_akermark = st.number_input("Andel åkermark", min_value=0.0, max_value=1.0, value=0.25, step=0.01)
+    andel_skogsmark = st.number_input("Andel skogsmark", min_value=0.0, max_value=1.0, value=0.5, step=0.01)
+with col2:
+    andel_exploaterad = st.number_input("Andel exploaterad", min_value=0.0, max_value=1.0, value=0.1, step=0.01)
+    andel_ovrig = st.number_input("Andel övrig", min_value=0.0, max_value=1.0, value=0.15, step=0.01)
+
+if auto_normalize:
+    land_raw = np.array([andel_akermark, andel_exploaterad, andel_skogsmark, andel_ovrig], dtype=float)
+    land_sum = land_raw.sum()
+    if land_sum > 0:
+        land_norm = land_raw / land_sum
+        st.caption(
+            f"Normaliserade markandelar (summa {land_sum:.3f} → 1.000): "
+            f"Åker={land_norm[0]:.3f}, Exploaterad={land_norm[1]:.3f}, Skog={land_norm[2]:.3f}, Övrig={land_norm[3]:.3f}"
+        )
+    else:
+        st.warning("Summan av markandelar är 0. Öka minst en av andelarna.", icon="⚠️")
+
+st.subheader("Jordarter – andelar")
+col3, col4, col5 = st.columns(3)
+with col3:
+    andel_leriga = st.number_input("Andel leriga", min_value=0.0, max_value=1.0, value=0.4, step=0.01)
+with col4:
+    andel_medelfina = st.number_input("Andel medelfina", min_value=0.0, max_value=1.0, value=0.4, step=0.01)
+with col5:
+    andel_grova = st.number_input("Andel grova", min_value=0.0, max_value=1.0, value=0.2, step=0.01)
+
+if auto_normalize:
+    soil_raw = np.array([andel_leriga, andel_medelfina, andel_grova], dtype=float)
+    soil_sum = soil_raw.sum()
+    if soil_sum > 0:
+        soil_norm = soil_raw / soil_sum
+        st.caption(
+            f"Normaliserade jordartsandelar (summa {soil_sum:.3f} → 1.000): "
+            f"Leriga={soil_norm[0]:.3f}, Medelfina={soil_norm[1]:.3f}, Grova={soil_norm[2]:.3f}"
+        )
+    else:
+        st.warning("Summan av jordartsandelar är 0. Öka minst en av andelarna.", icon="⚠️")
+
+# --------------- Kör modell ---------------
+
+st.header("2) Beräkna")
+run = st.button("Kör modellen", type="primary")
+
+if run:
     try:
-        x = float(x)
-    except Exception:
-        return 0.0
-    if np.isnan(x):
-        return 0.0
-    return min(max(x, 0.0), 1.0)
+        result = run_model(
+            area_ha=area_ha,
+            andel_akermark=andel_akermark,
+            andel_exploaterad=andel_exploaterad,
+            andel_skogsmark=andel_skogsmark,
+            andel_ovrig=andel_ovrig,
+            andel_leriga=andel_leriga,
+            andel_medelfina=andel_medelfina,
+            andel_grova=andel_grova,
+            auto_normalize=auto_normalize,
+        )
 
+        p_kg_per_ha = result["p_kg_per_ha"]
+        total_kg_per_ar = result["total_kg_per_ar"]
 
-def validate_and_prepare(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    """
-    Klipper andelar till [0,1], säkrar area_ha >= 0,
-    och returnerar ev. varningar om summor inte är exakt 1.
-    (Ingen normalisering görs här – modellen kan normalisera om användaren valt det.)
-    """
-    df2 = df.copy()
+        st.success("Beräkning klar ✅")
+        st.metric(label="P-belastning (kg/ha·år)", value=f"{p_kg_per_ha:,.3f}")
+        st.metric(label="Total belastning (kg/år)", value=f"{total_kg_per_ar:,.1f}")
 
-    # Säkerställ kolumner och klipp andelar
-    for c in LAND_COLS + SOIL_COLS:
-        if c not in df2.columns:
-            df2[c] = 0.0
-        df2[c] = df2[c].apply(clamp01)
+        with st.expander("Visa råutdata", expanded=False):
+            st.json(result)
 
-    # Area
-    if "area_ha" not in df2.columns:
-        df2["area_ha"] = 0.0
-    df2["area_ha"] = pd.to_numeric(df2["area_ha"], errors="coerce").fillna(0.0)
+    except FileNotFoundError as e:
+        st.error(
+            "Kunde inte hitta modellen (`logrf_mild_model.pkl`).\n\n"
+            "Lägg filen i samma katalog som `app.py` och `model.py`.",
+            icon="❌",
+        )
+        st.exception(e)
+    except ValueError as e:
+        st.error("Ogiltiga indata. Kontrollera area och andelar.", icon="⚠️")
+        st.exception(e)
+    except Exception as e:
+        st.error("Ett oväntat fel inträffade vid körning av modellen.", icon="💥")
+        st.exception(e)
 
-    # Varning: negativa area → sätt till 0
-    if (df2["area_ha"] < 0).any():
-        df2.loc[df2["area_ha"] < 0, "area_ha"] = 0.0
-
-    warnings = []
-
-    # Summeringar (varning om ej exakt 1.0)
-    land_sum = df2[LAND_COLS].sum(axis=1)
-    soil_sum = df2[SOIL_COLS].sum(axis=1)
-
-    bad_land = ~np.isclose(land_sum, 1.0)
-    bad_soil = ~np.isclose(soil_sum, 1.0)
-
-    if bad_land.any():
-        ids = df2.loc[bad_land, "polygon_id"].astype(str).tolist()
-        warnings.append(f"Markandelar summerar inte till 1 för: {', '.join(ids)}.")
-
-    if bad_soil.any():
-        ids = df2.loc[bad_soil, "polygon_id"].astype(str).tolist()
-        warnings.append(f"Jordartsandelar summerar inte till 1 för: {', '.join(ids)}.")
-
-    # Area 0 (ger Tot P (kg/år) = 0 – OK men informativt)
-    zero_area = df2["area_ha"] <= 0
-    if zero_area.any():
-        ids = df2.loc[zero_area, "polygon_id"].astype(str).tolist()
-        warnings.append(f"Area (ha) är 0 för: {', '.join(ids)} (total belastning blir 0).")
-
-    return df2, warnings
-
+st.divider()
+st.caption("© Fosformodell – log-transformerad RandomForest med mild viktning.")
