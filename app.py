@@ -7,17 +7,20 @@ import altair as alt
 # ----------------------- Sidinställningar -----------------------
 st.set_page_config(page_title="Fosforbelastning – andelar & area", layout="wide")
 st.title("🧮 Fosforbelastning per polygon – andelar & area (ha)")
-st.caption("Ange area (ha) och andelar för markanvändning och jordarter per polygon. Koefﬁcienterna styrs av modell.py. Beräkna fosforbelastning i kg/ha/år och kg/år.")
+st.caption(
+    "Ange area (ha) och andelar för markanvändning och jordarter per polygon. "
+    "Koefficienterna styrs av modell.py. Beräkna fosforbelastning i kg/ha/år och kg/år."
+)
 
 # ----------------------- Konfiguration -------------------------
 LAND_COLS = ["andel_akermark", "andel_exploaterad", "andel_skogsmark", "andel_ovrig"]
 SOIL_COLS = ["andel_leriga", "andel_medelfina", "andel_grova"]
 
 # Importera modellen (koefficienter och beräkningar styrs här)
-from model import run_model  # <- viktiga ändringen: inga koeff-inmatningar i UI
+from model import run_model  # run_model(df: pd.DataFrame) -> pd.DataFrame
 
 # ----------------------- Hjälpfunktioner ------------------------
-def make_empty_table(n: int):
+def make_empty_table(n: int) -> pd.DataFrame:
     """Skapar en startmall med polygon_id, area_ha och standardandelar."""
     df = pd.DataFrame({
         "polygon_id": [f"P{i+1}" for i in range(n)],
@@ -151,92 +154,3 @@ if uploaded:
         df_in.insert(1, "area_ha", 10.0)
     for c in LAND_COLS + SOIL_COLS:
         if c not in df_in.columns:
-            df_in[c] = 0.0
-
-    st.session_state["work_df"] = df_in
-    st.success("Fil inläst och inlagd som arbetsdata.")
-
-# ----------------------- Lägg till rader manuellt ----------------------
-st.subheader("2) Ange area (ha) och andelar per polygon")
-st.caption("Du kan lägga till valfritt antal områden manuellt samt redigera tabellen nedan.")
-
-col_add1, col_add2 = st.columns([1, 1])
-with col_add1:
-    antal_nya = st.number_input("Antal nya områden att lägga till", min_value=1, max_value=5000, value=1, step=1)
-with col_add2:
-    if st.button("➕ Lägg till rader"):
-        st.session_state["work_df"] = append_rows(st.session_state["work_df"], int(antal_nya))
-        st.success(f"La till {antal_nya} nya områden.")
-
-# Redigerbar tabell
-column_config = {
-    "polygon_id": st.column_config.TextColumn("Polygon-ID"),
-    "area_ha": st.column_config.NumberColumn("Area (ha)", min_value=0.0, step=0.1),
-}
-for c in LAND_COLS + SOIL_COLS:
-    column_config[c] = st.column_config.NumberColumn(c, min_value=0.0, max_value=1.0, step=0.01)
-
-edited = st.data_editor(
-    st.session_state["work_df"],
-    use_container_width=True,
-    num_rows="dynamic",
-    hide_index=True,
-    column_config=column_config,
-    key="andels_area_editor",
-)
-# Uppdatera state med redigerad tabell
-st.session_state["work_df"] = edited
-
-# Validera/normalisera
-edited_norm, warns = validate_and_normalize_groups(st.session_state["work_df"], auto_normalize=auto_norm)
-if warns:
-    for w in warns:
-        st.warning(w)
-
-st.divider()
-
-# ----------------------- Kör modellen ---------------------------
-st.subheader("3) Kör beräkning (koefficienter från modell.py)")
-if st.button("🧪 Beräkna fosforbelastning", type="primary"):
-    with st.spinner("Beräknar..."):
-        # Viktigt: modellen styr koefficienter — vi skickar endast datatabellen
-        out = run_model(df=edited_norm)
-
-    st.success("Klar!")
-    st.subheader("Resultat per polygon")
-    st.dataframe(out, use_container_width=True)
-
-    # Summering
-    total_area = out["area_ha"].sum()
-    total_p_kgyr = out["Tot P (kg/år)"].sum()
-    mean_p_kghayr = out["Tot P bel. (kg/ha och år)"].mean()
-
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total area (ha)", f"{total_area:,.2f}")
-    c2.metric("Total fosfor (kg/år)", f"{total_p_kgyr:,.2f}")
-    c3.metric("Medel specifik belastning (kg/ha/år)", f"{mean_p_kghayr:,.2f}")
-
-    # Diagram – kg/år per polygon (Altair)
-    chart_tot = alt.Chart(out).mark_bar().encode(
-        x=alt.X("polygon_id:N", title="Polygon-ID", sort=None),
-        y=alt.Y("Tot P (kg/år):Q", title="kg/år"),
-        tooltip=["polygon_id", "Tot P (kg/år)", "Tot P bel. (kg/ha och år)", "area_ha"]
-    ).properties(title="Fosforbelastning (kg/år) per polygon")
-    st.altair_chart(chart_tot, use_container_width=True)
-
-    # Diagram – kg/ha/år per polygon (Altair)
-    chart_spec = alt.Chart(out).mark_bar(color="#3b82f6").encode(
-        x=alt.X("polygon_id:N", title="Polygon-ID", sort=None),
-        y=alt.Y("Tot P bel. (kg/ha och år):Q", title="kg/ha/år"),
-        tooltip=["polygon_id", "Tot P bel. (kg/ha och år)", "area_ha"]
-    ).properties(title="Specifik fosforbelastning (kg/ha/år) per polygon")
-    st.altair_chart(chart_spec, use_container_width=True)
-
-    # Export
-    st.download_button(
-        "⤓ Ladda ned resultat (CSV)",
-        data=out.to_csv(index=False).encode("utf-8"),
-        file_name="fosfor_resultat.csv",
-        mime="text/csv"
-    )
-else:
