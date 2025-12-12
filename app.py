@@ -125,3 +125,78 @@ def compute_landcover_shares(gdf: gpd.GeoDataFrame, raster, id_series: pd.Series
             out[cname] = 0.0
 
     return out
+
+st.title("Features per avrinningsområde: andel lerjord + markslag")
+
+st.info(
+    "Rasterfiler som används (måste ligga i samma mapp som appen): "
+    "`marktacke.tif` och `finkorniga jordarter.tif`.\n\n"
+    "Marktäckeklasser: 1/3=övrig mark, 2=åkermark, 4=exploaterad, 5=vatten, 6=skog.\n"
+    "Jordarter: 2=lerig jord."
+)
+
+try:
+    markt_r = open_raster(MARKTACKE_PATH)
+    lera_r = open_raster(LERA_PATH)
+except Exception as e:
+    st.error(str(e))
+    st.stop()
+
+with st.sidebar:
+    st.header("Inställningar")
+    id_field = st.text_input("ID-fält i vektordata", value="id")
+    all_touched = st.checkbox("All_touched (räkna pixlar som berör polygon)", value=True)
+
+uploaded = st.file_uploader(
+    "Ladda upp avrinningsområden (GeoJSON, GPKG eller ZIP-shapefile)",
+    type=["geojson", "json", "gpkg", "zip"]
+)
+
+if not uploaded:
+    st.stop()
+
+try:
+    gdf = read_uploaded_vector(uploaded)
+    ensure_crs(gdf)
+except Exception as e:
+    st.error(f"Kunde inte läsa vektordata: {e}")
+    st.stop()
+
+gdf = gdf[gdf.geometry.notna()].copy()
+gdf = gdf[gdf.is_valid].copy()
+if gdf.empty:
+    st.error("Inga giltiga geometrier efter filtrering.")
+    st.stop()
+
+if id_field not in gdf.columns:
+    st.warning(f"ID-fältet '{id_field}' hittades inte. Skapar ett löpnummer som id.")
+    gdf["id"] = np.arange(1, len(gdf) + 1)
+    id_field = "id"
+
+# reprojicera till respektive raster
+gdf_m = reproject_to_match(gdf, markt_r)
+gdf_l = reproject_to_match(gdf, lera_r)
+
+with st.spinner("Beräknar andelar per avrinningsområde..."):
+    clay_df = compute_clay_share(gdf_l, lera_r, gdf_l[id_field], all_touched=all_touched)
+    lc_df = compute_landcover_shares(gdf_m, markt_r, gdf_m[id_field], all_touched=all_touched)
+    out = clay_df.merge(lc_df, on="id", how="left")
+
+st.subheader("Resultattabell")
+st.caption("Andelar är mellan 0 och 1.")
+st.dataframe(out, use_container_width=True)
+
+csv = out.to_csv(index=False).encode("utf-8")
+st.download_button(
+    "Ladda ner som CSV",
+    data=csv,
+    file_name="andelar_lera_markslag.csv",
+    mime="text/csv"
+)
+
+st.subheader("Snabb kontroll")
+mark_cols = [c for c in out.columns if c.startswith("andel_") and c != "andel_lerjord"]
+if mark_cols:
+    sums = out[mark_cols].sum(axis=1)
+    st.write("Summan av markslagsandelar (bör vara nära 1 om polygonerna täcks av raster och lite nodata):")
+    st.dataframe(pd.DataFrame({"id": out["id"], "sum_markslag": sums}), use_container_width=True)
