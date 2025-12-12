@@ -7,3 +7,4 @@ rasterstats
 shapely
 pyproj
 fiona
+requests
