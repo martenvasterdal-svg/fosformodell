@@ -7,19 +7,21 @@ import altair as alt
 # ----------------------- Sidinställningar -----------------------
 st.set_page_config(page_title="Fosforbelastning – andelar & area", layout="wide")
 st.title("🧮 Fosforbelastning per polygon – andelar & area (ha)")
-st.caption("Ange area (ha) och andelar för markanvändning och jordarter per polygon. Justera koefficienter och beräkna fosforbelastning i kg/ha/år och kg/år.")
+st.caption("Ange area (ha) och andelar för markanvändning och jordarter per polygon. Koefﬁcienterna styrs av modell.py. Beräkna fosforbelastning i kg/ha/år och kg/år.")
 
 # ----------------------- Konfiguration -------------------------
 LAND_COLS = ["andel_akermark", "andel_exploaterad", "andel_skogsmark", "andel_ovrig"]
 SOIL_COLS = ["andel_leriga", "andel_medelfina", "andel_grova"]
-DEFAULT_ROWS = 5
+
+# Importera modellen (koefficienter och beräkningar styrs här)
+from model import run_model  # <- viktiga ändringen: inga koeff-inmatningar i UI
 
 # ----------------------- Hjälpfunktioner ------------------------
-def make_empty_table(n=DEFAULT_ROWS):
+def make_empty_table(n: int):
     """Skapar en startmall med polygon_id, area_ha och standardandelar."""
     df = pd.DataFrame({
         "polygon_id": [f"P{i+1}" for i in range(n)],
-        "area_ha": [10.0]*n,  # default 10 ha – går att ändra i tabellen
+        "area_ha": [10.0]*n,  # default 10 ha – kan ändras i tabellen
         # Markandelar (summa 1)
         "andel_akermark":   [0.25]*n,
         "andel_exploaterad":[0.10]*n,
@@ -44,8 +46,8 @@ def clamp01(x):
 def validate_and_normalize_groups(df: pd.DataFrame, auto_normalize: bool):
     """
     Validerar: andelar i [0,1], summor per grupp (mark/jordarter) ≈ 1.
-    Om auto_normalize=True normaliseras grupper (där summan > 0).
-    Returnerar (df_fix, warnings)
+    Om auto_normalize=True: normalisera grupper (där summan > 0).
+    Returnerar (df_fix, warnings).
     """
     df = df.copy()
 
@@ -102,61 +104,20 @@ def validate_and_normalize_groups(df: pd.DataFrame, auto_normalize: bool):
 
     return df, warnings
 
-def run_model(df: pd.DataFrame,
-              koef_land: dict,
-              koef_soil: dict,
-              baslinje_p: float = 0.0) -> pd.DataFrame:
-    """
-    Exempelmodell:
-      Tot P bel. (kg/ha/år) = baslinje
-                              + sum(mark_andel * koef_land)
-                              + sum(jord_andel * koef_soil)
-
-    Tot P (kg/år) = Tot P bel. (kg/ha/år) * area_ha
-
-    Byt gärna ut mot din faktiska statistiska modell.
-    """
+def append_rows(df: pd.DataFrame, n_new: int) -> pd.DataFrame:
+    """Lägg till n_new nya rader med defaultvärden och unika polygon_id."""
     df = df.copy()
+    start_idx = len(df)
+    new_df = make_empty_table(n_new)
+    # Gör unika ID som fortsätter befintlig numrering
+    new_df["polygon_id"] = [f"P{start_idx + i + 1}" for i in range(n_new)]
+    return pd.concat([df, new_df], ignore_index=True)
 
-    land_index = (
-        df["andel_akermark"]    * koef_land.get("akermark", 0.0) +
-        df["andel_exploaterad"] * koef_land.get("exploaterad", 0.0) +
-        df["andel_skogsmark"]   * koef_land.get("skogsmark", 0.0) +
-        df["andel_ovrig"]       * koef_land.get("ovrig", 0.0)
-    )
-
-    soil_index = (
-        df["andel_leriga"]      * koef_soil.get("leriga", 0.0) +
-        df["andel_medelfina"]   * koef_soil.get("medelfina", 0.0) +
-        df["andel_grova"]       * koef_soil.get("grova", 0.0)
-    )
-
-    df["Tot P bel. (kg/ha och år)"] = baslinje_p + land_index + soil_index
-    df["Tot P (kg/år)"] = df["Tot P bel. (kg/ha och år)"] * df["area_ha"]
-    return df
-
-# ----------------------- Sidofält -------------------------------
+# ----------------------- Sidebar (bara validering) -------------------------------
 with st.sidebar:
-    st.header("🧰 Koefficienter & validering")
-
-    st.subheader("Koefficienter – mark (kg P/ha/år per andel)")
-    akermark_k = st.number_input("Åkermark", value=0.8, step=0.1)
-    explo_k    = st.number_input("Exploaterad mark", value=0.4, step=0.1)
-    skog_k     = st.number_input("Skog", value=0.2, step=0.1)
-    ovrig_k    = st.number_input("Övrig mark", value=0.1, step=0.1)
-
-    st.subheader("Koefficienter – jordarter (modifier/addering per andel)")
-    ler_k   = st.number_input("Leriga jordar", value=0.2, step=0.1)
-    medel_k = st.number_input("Medelfina jordar", value=0.1, step=0.1)
-    grov_k  = st.number_input("Grova jordar", value=0.0, step=0.1)
-
-    baslinje_p = st.number_input("Baslinje (kg P/ha/år)", value=0.0, step=0.1)
-
-    st.subheader("Validering")
+    st.header("🧰 Inställningar")
+    st.write("Koefficienter styrs av **modell.py** och kan inte ändras här.")
     auto_norm = st.checkbox("Normalisera andelar automatiskt till 1 per grupp", value=True)
-
-    koef_land = {"akermark": akermark_k, "exploaterad": explo_k, "skogsmark": skog_k, "ovrig": ovrig_k}
-    koef_soil = {"leriga": ler_k, "medelfina": medel_k, "grova": grov_k}
 
 # ----------------------- Dataingång -----------------------------
 st.subheader("1) Ladda upp tabell eller starta från mall")
@@ -165,29 +126,49 @@ uploaded = st.file_uploader(
     type=["csv", "xlsx"]
 )
 
+# Initiera session-state för arbets-DF
+if "work_df" not in st.session_state:
+    st.session_state["work_df"] = make_empty_table(5)  # default 5 rader
+
+# Skapa ny mall med valfritt antal rader
+with st.expander("Starta från mall (valfritt)"):
+    antal_mall = st.number_input("Antal områden i ny mall", min_value=1, max_value=5000, value=5, step=1)
+    if st.button("🧩 Skapa ny mall"):
+        st.session_state["work_df"] = make_empty_table(int(antal_mall))
+        st.success(f"Skapade ny mall med {antal_mall} områden.")
+
+# Läs uppladdad fil (om finns)
 if uploaded:
     if uploaded.name.lower().endswith(".csv"):
-        df = pd.read_csv(uploaded)
+        df_in = pd.read_csv(uploaded)
     else:
-        df = pd.read_excel(uploaded, engine="openpyxl")
-    st.success("Fil inläst.")
-else:
-    df = make_empty_table()
-    st.info("Ingen fil uppladdad – startar från en mall med 5 rader.")
+        df_in = pd.read_excel(uploaded, engine="openpyxl")
 
-# Se till att nödvändiga kolumner finns
-if "polygon_id" not in df.columns:
-    df.insert(0, "polygon_id", [f"P{i+1}" for i in range(len(df))])
-if "area_ha" not in df.columns:
-    df.insert(1, "area_ha", 10.0)
+    # Säkerställ kolumner
+    if "polygon_id" not in df_in.columns:
+        df_in.insert(0, "polygon_id", [f"P{i+1}" for i in range(len(df_in))])
+    if "area_ha" not in df_in.columns:
+        df_in.insert(1, "area_ha", 10.0)
+    for c in LAND_COLS + SOIL_COLS:
+        if c not in df_in.columns:
+            df_in[c] = 0.0
 
-for c in LAND_COLS + SOIL_COLS:
-    if c not in df.columns:
-        df[c] = 0.0
+    st.session_state["work_df"] = df_in
+    st.success("Fil inläst och inlagd som arbetsdata.")
 
-# ----------------------- Redigerbar tabell ----------------------
+# ----------------------- Lägg till rader manuellt ----------------------
 st.subheader("2) Ange area (ha) och andelar per polygon")
-st.caption("Area (ha) används för att beräkna total belastning (kg/år). Andelar ska summera till 1 inom Mark-gruppen respektive Jordarts-gruppen.")
+st.caption("Du kan lägga till valfritt antal områden manuellt samt redigera tabellen nedan.")
+
+col_add1, col_add2 = st.columns([1, 1])
+with col_add1:
+    antal_nya = st.number_input("Antal nya områden att lägga till", min_value=1, max_value=5000, value=1, step=1)
+with col_add2:
+    if st.button("➕ Lägg till rader"):
+        st.session_state["work_df"] = append_rows(st.session_state["work_df"], int(antal_nya))
+        st.success(f"La till {antal_nya} nya områden.")
+
+# Redigerbar tabell
 column_config = {
     "polygon_id": st.column_config.TextColumn("Polygon-ID"),
     "area_ha": st.column_config.NumberColumn("Area (ha)", min_value=0.0, step=0.1),
@@ -196,16 +177,18 @@ for c in LAND_COLS + SOIL_COLS:
     column_config[c] = st.column_config.NumberColumn(c, min_value=0.0, max_value=1.0, step=0.01)
 
 edited = st.data_editor(
-    df,
+    st.session_state["work_df"],
     use_container_width=True,
     num_rows="dynamic",
     hide_index=True,
     column_config=column_config,
     key="andels_area_editor",
 )
+# Uppdatera state med redigerad tabell
+st.session_state["work_df"] = edited
 
 # Validera/normalisera
-edited_norm, warns = validate_and_normalize_groups(edited, auto_normalize=auto_norm)
+edited_norm, warns = validate_and_normalize_groups(st.session_state["work_df"], auto_normalize=auto_norm)
 if warns:
     for w in warns:
         st.warning(w)
@@ -213,15 +196,11 @@ if warns:
 st.divider()
 
 # ----------------------- Kör modellen ---------------------------
-st.subheader("3) Kör beräkning")
+st.subheader("3) Kör beräkning (koefficienter från modell.py)")
 if st.button("🧪 Beräkna fosforbelastning", type="primary"):
     with st.spinner("Beräknar..."):
-        out = run_model(
-            df=edited_norm,
-            koef_land=koef_land,
-            koef_soil=koef_soil,
-            baslinje_p=baslinje_p
-        )
+        # Viktigt: modellen styr koefficienter — vi skickar endast datatabellen
+        out = run_model(df=edited_norm)
 
     st.success("Klar!")
     st.subheader("Resultat per polygon")
@@ -261,4 +240,3 @@ if st.button("🧪 Beräkna fosforbelastning", type="primary"):
         mime="text/csv"
     )
 else:
-    st.info("Sätt area (ha) och andelar i tabellen och klicka **Beräkna fosforbelastning**.")
