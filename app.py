@@ -136,8 +136,8 @@ st.info(
 )
 
 try:
-    markt_r = open_raster(MARKTACKE_PATH)
-    lera_r = open_raster(LERA_PATH)
+    markt_r = open_raster(MARKTACKE_URL)
+    lera_r = open_raster(LERA_URL)
 except Exception as e:
     st.error(str(e))
     st.stop()
