@@ -101,4 +101,27 @@ def compute_clay_share(gdf: gpd.GeoDataFrame, raster, id_series: pd.Series, all_
 
 def compute_landcover_shares(gdf: gpd.GeoDataFrame, raster, id_series: pd.Series, all_touched: bool):
     df = zonal_counts_categorical(gdf, raster, all_touched=all_touched)
-    total = df["__tota]()
+
+    total = df["__total__"].replace(0, np.nan)
+    df = df.drop(columns=["__total__"])
+
+    # proportioner per kod
+    prop = df.div(total, axis=0)
+
+    out = pd.DataFrame({"id": id_series.to_numpy()})
+
+    # slå ihop koder som mappar till samma namn (1 och 3 → ovrig_mark)
+    for code, name in LANDCOVER_MAP.items():
+        if code in prop.columns:
+            colname = f"andel_{name}"
+            if colname not in out:
+                out[colname] = 0.0
+            out[colname] += prop[code]
+
+    # säkerställ att alla kolumner finns
+    for name in set(LANDCOVER_MAP.values()):
+        cname = f"andel_{name}"
+        if cname not in out.columns:
+            out[cname] = 0.0
+
+    return out
