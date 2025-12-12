@@ -2,225 +2,87 @@
 model.py
 
 Fosformodell (log-transformerad RandomForest med mild viktning).
-Laddar en sparad modell i filen 'logrf_mild_model.pkl' i samma mapp.
+Exporterar funktionen `run_model` för enkel användning från andra script.
 
-Indata (per område):
-- area_ha            : total area (ha)
-- andel_akermark     : fraktion åkermark (0–1)
-- andel_exploaterad  : fraktion exploaterad/urban mark (0–1)
-- andel_skogsmark    : fraktion skogsmark (0–1)
-- andel_ovrig        : fraktion övriga markslag (0–1)
-- andel_leriga       : fraktion finkorniga jordar (0–1)
-- andel_medelfina    : fraktion mellangrova jordar (0–1)
-- andel_grova        : fraktion grova jordar (0–1)
-
-Utdata:
-- genomsnittlig P-belastning (kg/ha och år)
-- total P-belastning (kg/år)
+Kräver filen 'logrf_mild_model.pkl' i samma katalog.
 """
 
 from __future__ import annotations
 
 import pickle
 from pathlib import Path
-from typing import Tuple, Optional
+from typing import Dict
 
 import numpy as np
 
-_DEFAULT_EPS = 0.01
 _MODEL_FILENAME = "logrf_mild_model.pkl"
+_DEFAULT_EPS = 0.01
 
+
+# --------------------------------------------------
+# Hjälpfunktioner
+# --------------------------------------------------
 
 def _check_0_1(name: str, value: float) -> float:
-    try:
-        v = float(value)
-    except Exception as e:
-        raise ValueError(f"{name} måste vara ett tal, fick {value!r}") from e
+    v = float(value)
     if not np.isfinite(v):
-        raise ValueError(f"{name} måste vara ändligt (inte NaN/inf), fick {v}")
+        raise ValueError(f"{name} måste vara ändligt")
     if v < 0.0 or v > 1.0:
         raise ValueError(f"{name} måste ligga mellan 0 och 1, fick {v}")
     return v
 
 
-def _normalize_group(
-    values: np.ndarray,
-    group_name: str,
-    auto_normalize: bool,
-    tol: float = 1e-6,
-) -> np.ndarray:
-    s = float(values.sum())
-    if abs(s - 1.0) <= tol:
-        return values
-
-    if not auto_normalize:
-        raise ValueError(
-            f"{group_name} summerar till {s:.6f} (ska vara 1.0). "
-            f"Sätt auto_normalize=True eller justera andelarna."
-        )
-
+def _normalize(values: np.ndarray) -> np.ndarray:
+    s = values.sum()
     if s <= 0:
-        raise ValueError(
-            f"{group_name} summerar till {s:.6f} (<=0). Kan inte normalisera."
-        )
-
+        raise ValueError("Summan av andelar är <= 0")
     return values / s
 
 
+# --------------------------------------------------
+# Modellklass
+# --------------------------------------------------
+
 class FosforModel:
-    """
-    Inkapslar den sparade RandomForest-modellen och ger prediktionsfunktioner.
-    """
-
-    def __init__(self, model_path: Optional[Path] = None) -> None:
-        if model_path is None:
-            model_path = Path(__file__).with_name(_MODEL_FILENAME)
-
+    def __init__(self) -> None:
+        model_path = Path(__file__).with_name(_MODEL_FILENAME)
         if not model_path.exists():
             raise FileNotFoundError(
-                f"Hittar inte modellen '{model_path}'. "
-                f"Lägg '{_MODEL_FILENAME}' i samma mapp som model.py."
+                f"Saknar {_MODEL_FILENAME} i samma katalog som model.py"
             )
 
         with model_path.open("rb") as f:
             pkg = pickle.load(f)
 
-        self._rf = pkg["model"]
-        self._eps: float = float(pkg.get("eps", _DEFAULT_EPS))
-        self._feature_order = pkg.get(
-            "feature_order",
-            ["f_coarse", "f_medium", "f_fine", "f_field", "f_forest", "f_expl", "f_other"],
-        )
+        self.model = pkg["model"]
+        self.eps = pkg.get("eps", _DEFAULT_EPS)
+        self.feature_order = pkg["feature_order"]
 
-    def predict_p_kg_per_ha(
-        self,
-        *,
-        andel_akermark: float,
-        andel_exploaterad: float,
-        andel_skogsmark: float,
-        andel_ovrig: float,
-        andel_leriga: float,
-        andel_medelfina: float,
-        andel_grova: float,
-        auto_normalize: bool = True,
-    ) -> float:
-        """
-        Predikterar genomsnittlig fosforbelastning (kg/ha och år).
-
-        auto_normalize=True:
-          - normaliserar markandelar och jordartsandelar så att de summerar till 1
-            om de ligger nära men inte exakt 1 (t.ex. p.g.a. avrundning).
-        """
-
-        # Validera 0..1
-        a_field = _check_0_1("andel_akermark", andel_akermark)
-        a_expl = _check_0_1("andel_exploaterad", andel_exploaterad)
-        a_forest = _check_0_1("andel_skogsmark", andel_skogsmark)
-        a_other = _check_0_1("andel_ovrig", andel_ovrig)
-
-        s_fine = _check_0_1("andel_leriga", andel_leriga)
-        s_med = _check_0_1("andel_medelfina", andel_medelfina)
-        s_coarse = _check_0_1("andel_grova", andel_grova)
-
-        # Normalisera grupper
-        land = np.array([a_field, a_expl, a_forest, a_other], dtype=float)
-        soil = np.array([s_fine, s_med, s_coarse], dtype=float)
-
-        land = _normalize_group(land, "Markandelar (åker+exploaterad+skog+övrig)", auto_normalize)
-        soil = _normalize_group(soil, "Jordartsandelar (leriga+medelfina+grova)", auto_normalize)
-
-        # Mappa till modellens feature-namn
-        feat_dict = {
-            "f_coarse": soil[2],
-            "f_medium": soil[1],
-            "f_fine": soil[0],
-            "f_field": land[0],
-            "f_expl": land[1],
-            "f_forest": land[2],
-            "f_other": land[3],
-        }
-
-        X = np.array([[feat_dict[name] for name in self._feature_order]], dtype=float)
-
-        # Modellen är tränad på log(P + eps)
-        y_log = self._rf.predict(X)
-        p_kg_per_ha = float(np.exp(y_log) - self._eps)
-        return p_kg_per_ha
-
-    def predict_total_load_kg(
-        self,
-        *,
-        area_ha: float,
-        andel_akermark: float,
-        andel_exploaterad: float,
-        andel_skogsmark: float,
-        andel_ovrig: float,
-        andel_leriga: float,
-        andel_medelfina: float,
-        andel_grova: float,
-        auto_normalize: bool = True,
-    ) -> Tuple[float, float]:
-        """
-        Returnerar (kg/ha·år, kg/år) för området.
-        """
-
-        try:
-            area = float(area_ha)
-        except Exception as e:
-            raise ValueError(f"area_ha måste vara ett tal, fick {area_ha!r}") from e
-        if not np.isfinite(area) or area <= 0:
-            raise ValueError(f"area_ha måste vara > 0 och ändligt, fick {area}")
-
-        p_kg_per_ha = self.predict_p_kg_per_ha(
-            andel_akermark=andel_akermark,
-            andel_exploaterad=andel_exploaterad,
-            andel_skogsmark=andel_skogsmark,
-            andel_ovrig=andel_ovrig,
-            andel_leriga=andel_leriga,
-            andel_medelfina=andel_medelfina,
-            andel_grova=andel_grova,
-            auto_normalize=auto_normalize,
-        )
-        total_kg_per_year = area * p_kg_per_ha
-        return p_kg_per_ha, total_kg_per_year
+    def predict(self, features: Dict[str, float]) -> float:
+        X = np.array([[features[name] for name in self.feature_order]])
+        y_log = self.model.predict(X)
+        return float(np.exp(y_log) - self.eps)
 
 
-# Bekväm modulnivå-API
-try:
-    fosfor_model = FosforModel()
-except FileNotFoundError:
-    fosfor_model = None
+# --------------------------------------------------
+# Global modellinstans
+# --------------------------------------------------
+
+_fosfor_model: FosforModel | None = None
 
 
-def predict_p_kg_per_ha(
-    *,
-    area_ha: float = 1.0,  # finns för att matcha ditt indata-schema, men används inte här
-    andel_akermark: float,
-    andel_exploaterad: float,
-    andel_skogsmark: float,
-    andel_ovrig: float,
-    andel_leriga: float,
-    andel_medelfina: float,
-    andel_grova: float,
-    auto_normalize: bool = True,
-) -> float:
-    if fosfor_model is None:
-        raise RuntimeError(
-            f"Modellen är inte laddad. Kontrollera att '{_MODEL_FILENAME}' finns i samma mapp som model.py."
-        )
-    return fosfor_model.predict_p_kg_per_ha(
-        andel_akermark=andel_akermark,
-        andel_exploaterad=andel_exploaterad,
-        andel_skogsmark=andel_skogsmark,
-        andel_ovrig=andel_ovrig,
-        andel_leriga=andel_leriga,
-        andel_medelfina=andel_medelfina,
-        andel_grova=andel_grova,
-        auto_normalize=auto_normalize,
-    )
+def _get_model() -> FosforModel:
+    global _fosfor_model
+    if _fosfor_model is None:
+        _fosfor_model = FosforModel()
+    return _fosfor_model
 
 
-def predict_total_load_kg(
+# --------------------------------------------------
+# 🚀 Publikt API
+# --------------------------------------------------
+
+def run_model(
     *,
     area_ha: float,
     andel_akermark: float,
@@ -231,21 +93,58 @@ def predict_total_load_kg(
     andel_medelfina: float,
     andel_grova: float,
     auto_normalize: bool = True,
-) -> Tuple[float, float]:
-    if fosfor_model is None:
-        raise RuntimeError(
-            f"Modellen är inte laddad. Kontrollera att '{_MODEL_FILENAME}' finns i samma mapp som model.py."
-        )
-    return fosfor_model.predict_total_load_kg(
-        area_ha=area_ha,
-        andel_akermark=andel_akermark,
-        andel_exploaterad=andel_exploaterad,
-        andel_skogsmark=andel_skogsmark,
-        andel_ovrig=andel_ovrig,
-        andel_leriga=andel_leriga,
-        andel_medelfina=andel_medelfina,
-        andel_grova=andel_grova,
-        auto_normalize=auto_normalize,
-    )
+) -> Dict[str, float]:
+    """
+    Kör fosformodellen.
 
+    Returnerar en dict med:
+    - p_kg_per_ha
+    - total_kg_per_ar
+    """
 
+    # Validera area
+    area = float(area_ha)
+    if not np.isfinite(area) or area <= 0:
+        raise ValueError("area_ha måste vara > 0")
+
+    # Validera andelar
+    land = np.array([
+        _check_0_1("andel_akermark", andel_akermark),
+        _check_0_1("andel_exploaterad", andel_exploaterad),
+        _check_0_1("andel_skogsmark", andel_skogsmark),
+        _check_0_1("andel_ovrig", andel_ovrig),
+    ])
+
+    soil = np.array([
+        _check_0_1("andel_leriga", andel_leriga),
+        _check_0_1("andel_medelfina", andel_medelfina),
+        _check_0_1("andel_grova", andel_grova),
+    ])
+
+    if auto_normalize:
+        land = _normalize(land)
+        soil = _normalize(soil)
+    else:
+        if abs(land.sum() - 1.0) > 1e-6:
+            raise ValueError("Markandelar summerar inte till 1")
+        if abs(soil.sum() - 1.0) > 1e-6:
+            raise ValueError("Jordartsandelar summerar inte till 1")
+
+    features = {
+        "f_coarse": soil[2],
+        "f_medium": soil[1],
+        "f_fine": soil[0],
+        "f_field": land[0],
+        "f_expl": land[1],
+        "f_forest": land[2],
+        "f_other": land[3],
+    }
+
+    model = _get_model()
+    p_kg_per_ha = model.predict(features)
+    total_kg = p_kg_per_ha * area
+
+    return {
+        "p_kg_per_ha": p_kg_per_ha,
+        "total_kg_per_ar": total_kg,
+    }
