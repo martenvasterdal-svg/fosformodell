@@ -1,137 +1,104 @@
+import io
+import zipfile
+from pathlib import Path
 
-# app.py
 import numpy as np
+import pandas as pd
 import streamlit as st
+import geopandas as gpd
+import rasterio
+from rasterstats import zonal_stats
 
-# Importera din modellfunktion
-from model import run_model
 
-st.set_page_config(
-    page_title="Fosformodell – P-belastning",
-    page_icon="🧪",
-    layout="centered",
-)
+st.set_page_config(page_title="Fosfor-Features: lera & markslag", layout="wide")
 
-st.title("🧪 Fosformodell (log-transformerad RandomForest)")
-st.caption("Beräknar P-belastning baserat på area, mark- och jordartsandelar.")
+MARKTACKE_PATH = Path("marktacke.tif")
+LERA_PATH = Path("finkorniga jordarter.tif")
 
-with st.expander("ℹ️ Om modellen", expanded=False):
-    st.markdown(
-        """
-        Den här appen använder funktionen `run_model(...)` från `model.py` och kräver
-        att filen **`logrf_mild_model.pkl`** ligger i samma katalog.
+# Klassning enligt din definition
+LANDCOVER_MAP = {
+    1: "ovrig_mark",
+    2: "akermark",
+    3: "ovrig_mark",
+    4: "exploaterad_mark",
+    5: "vatten",
+    6: "skog",
+}
+CLAY_CODE = 2  # 2 = lerig jord
 
-        **Utdata**:
-        - `p_kg_per_ha` – beräknad fosforbelastning per hektar (kg/ha·år)
-        - `total_kg_per_ar` – total belastning per år (kg/år)
-        """
+
+@st.cache_resource
+def open_raster(path: Path):
+    if not path.exists():
+        raise FileNotFoundError(f"Hittar inte rasterfilen: {path.resolve()}")
+    return rasterio.open(path)
+
+
+def read_uploaded_vector(uploaded_file) -> gpd.GeoDataFrame:
+    name = uploaded_file.name.lower()
+
+    if name.endswith(".geojson") or name.endswith(".json"):
+        return gpd.read_file(uploaded_file)
+
+    if name.endswith(".gpkg"):
+        data = uploaded_file.getvalue()
+        tmp = Path(st.session_state.get("tmp_gpkg", "tmp_upload.gpkg"))
+        tmp.write_bytes(data)
+        st.session_state["tmp_gpkg"] = str(tmp)
+        return gpd.read_file(tmp)
+
+    if name.endswith(".zip"):
+        zdata = uploaded_file.getvalue()
+        z = zipfile.ZipFile(io.BytesIO(zdata))
+        extract_dir = Path(st.session_state.get("tmp_shp_dir", "tmp_shp"))
+        extract_dir.mkdir(exist_ok=True)
+        z.extractall(extract_dir)
+        st.session_state["tmp_shp_dir"] = str(extract_dir)
+
+        shp_files = list(extract_dir.glob("*.shp")) or list(extract_dir.rglob("*.shp"))
+        if not shp_files:
+            raise ValueError("Kunde inte hitta någon .shp i ZIP-filen.")
+        return gpd.read_file(shp_files[0])
+
+    raise ValueError("Stöds ej. Ladda upp GeoJSON, GPKG eller ZIP (shapefile).")
+
+
+def ensure_crs(gdf: gpd.GeoDataFrame):
+    if gdf.crs is None:
+        raise ValueError("Vektorfiler saknar CRS. Sätt CRS innan uppladdning (t.ex. EPSG:3006).")
+
+
+def reproject_to_match(gdf: gpd.GeoDataFrame, raster) -> gpd.GeoDataFrame:
+    if gdf.crs != raster.crs:
+        return gdf.to_crs(raster.crs)
+    return gdf
+
+
+def zonal_counts_categorical(gdf: gpd.GeoDataFrame, raster, all_touched: bool):
+    stats = zonal_stats(
+        gdf,
+        raster.read(1),
+        affine=raster.transform,
+        nodata=raster.nodata,
+        categorical=True,
+        all_touched=all_touched,
+        geojson_out=False,
     )
+    df = pd.DataFrame(stats).fillna(0)
+    df["__total__"] = df.sum(axis=1)
+    return df
 
-# --------------- Inmatning ---------------
 
-st.header("1) Inmatning")
+def compute_clay_share(gdf: gpd.GeoDataFrame, raster, id_series: pd.Series, all_touched: bool):
+    df = zonal_counts_categorical(gdf, raster, all_touched=all_touched)
+    total = df["__total__"].replace(0, np.nan)
+    clay_px = df[CLAY_CODE] if CLAY_CODE in df.columns else 0
+    return pd.DataFrame({
+        "id": id_series.to_numpy(),
+        "andel_lerjord": (clay_px / total).to_numpy()
+    })
 
-col_area, col_norm = st.columns([2, 1])
-with col_area:
-    area_ha = st.number_input(
-        "Area (ha)",
-        min_value=0.0,
-        value=100.0,
-        step=1.0,
-        format="%.2f",
-        help="Total area i hektar (> 0).",
-    )
-with col_norm:
-    auto_normalize = st.toggle(
-        "Auto-normalisera andelar",
-        value=True,
-        help="Om på, normaliseras andelarna automatiskt till att summera till 1.",
-    )
 
-st.subheader("Markanvändning – andelar")
-col1, col2 = st.columns(2)
-with col1:
-    andel_akermark = st.number_input("Andel åkermark", min_value=0.0, max_value=1.0, value=0.25, step=0.01)
-    andel_skogsmark = st.number_input("Andel skogsmark", min_value=0.0, max_value=1.0, value=0.5, step=0.01)
-with col2:
-    andel_exploaterad = st.number_input("Andel exploaterad", min_value=0.0, max_value=1.0, value=0.1, step=0.01)
-    andel_ovrig = st.number_input("Andel övrig", min_value=0.0, max_value=1.0, value=0.15, step=0.01)
-
-if auto_normalize:
-    land_raw = np.array([andel_akermark, andel_exploaterad, andel_skogsmark, andel_ovrig], dtype=float)
-    land_sum = land_raw.sum()
-    if land_sum > 0:
-        land_norm = land_raw / land_sum
-        st.caption(
-            f"Normaliserade markandelar (summa {land_sum:.3f} → 1.000): "
-            f"Åker={land_norm[0]:.3f}, Exploaterad={land_norm[1]:.3f}, Skog={land_norm[2]:.3f}, Övrig={land_norm[3]:.3f}"
-        )
-    else:
-        st.warning("Summan av markandelar är 0. Öka minst en av andelarna.", icon="⚠️")
-
-st.subheader("Jordarter – andelar")
-col3, col4, col5 = st.columns(3)
-with col3:
-    andel_leriga = st.number_input("Andel leriga", min_value=0.0, max_value=1.0, value=0.4, step=0.01)
-with col4:
-    andel_medelfina = st.number_input("Andel medelfina", min_value=0.0, max_value=1.0, value=0.4, step=0.01)
-with col5:
-    andel_grova = st.number_input("Andel grova", min_value=0.0, max_value=1.0, value=0.2, step=0.01)
-
-if auto_normalize:
-    soil_raw = np.array([andel_leriga, andel_medelfina, andel_grova], dtype=float)
-    soil_sum = soil_raw.sum()
-    if soil_sum > 0:
-        soil_norm = soil_raw / soil_sum
-        st.caption(
-            f"Normaliserade jordartsandelar (summa {soil_sum:.3f} → 1.000): "
-            f"Leriga={soil_norm[0]:.3f}, Medelfina={soil_norm[1]:.3f}, Grova={soil_norm[2]:.3f}"
-        )
-    else:
-        st.warning("Summan av jordartsandelar är 0. Öka minst en av andelarna.", icon="⚠️")
-
-# --------------- Kör modell ---------------
-
-st.header("2) Beräkna")
-run = st.button("Kör modellen", type="primary")
-
-if run:
-    try:
-        result = run_model(
-            area_ha=area_ha,
-            andel_akermark=andel_akermark,
-            andel_exploaterad=andel_exploaterad,
-            andel_skogsmark=andel_skogsmark,
-            andel_ovrig=andel_ovrig,
-            andel_leriga=andel_leriga,
-            andel_medelfina=andel_medelfina,
-            andel_grova=andel_grova,
-            auto_normalize=auto_normalize,
-        )
-
-        p_kg_per_ha = result["p_kg_per_ha"]
-        total_kg_per_ar = result["total_kg_per_ar"]
-
-        st.success("Beräkning klar ✅")
-        st.metric(label="P-belastning (kg/ha·år)", value=f"{p_kg_per_ha:,.3f}")
-        st.metric(label="Total belastning (kg/år)", value=f"{total_kg_per_ar:,.1f}")
-
-        with st.expander("Visa råutdata", expanded=False):
-            st.json(result)
-
-    except FileNotFoundError as e:
-        st.error(
-            "Kunde inte hitta modellen (`logrf_mild_model.pkl`).\n\n"
-            "Lägg filen i samma katalog som `app.py` och `model.py`.",
-            icon="❌",
-        )
-        st.exception(e)
-    except ValueError as e:
-        st.error("Ogiltiga indata. Kontrollera area och andelar.", icon="⚠️")
-        st.exception(e)
-    except Exception as e:
-        st.error("Ett oväntat fel inträffade vid körning av modellen.", icon="💥")
-        st.exception(e)
-
-st.divider()
-st.caption("© Fosformodell – log-transformerad RandomForest med mild viktning.")
+def compute_landcover_shares(gdf: gpd.GeoDataFrame, raster, id_series: pd.Series, all_touched: bool):
+    df = zonal_counts_categorical(gdf, raster, all_touched=all_touched)
+    total = df["__tota]()
